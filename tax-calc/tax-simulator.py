@@ -12,7 +12,7 @@ st.title("📟 Income Tax Comparator")
 assessment_year = st.selectbox("Assessment Year", options=["2024–25", "2025–26"], index=1)
 
 # Senior Citizen Toggle
-is_senior = st.toggle("Are you a Senior Citizen (60 years or older)?", value=False)
+is_senior = st.toggle("Are you a Senior Citizen (60ers or older)?", value=False)
 
 # Section 80TTB if Senior
 ded_80ttb = 0
@@ -23,14 +23,29 @@ if is_senior:
 
 # Session state for reset
 def reset_fields():
-    for key in list(st.session_state.keys()):
-        if isinstance(st.session_state[key], (int, float)):
+    fields_to_clear = [
+        "salary_income", "rental_income", "ltcg", "stcg",
+        "ded_80c", "ded_80d", "ded_hra", "ded_home_loan", "ded_other", "ded_80ttb"
+    ]
+    for key in fields_to_clear:
+        if key in st.session_state:
             st.session_state[key] = 0
 
 st.button("🔁 Clear All Fields", on_click=reset_fields)
 
-# Input fields
-income = st.number_input("Enter your Gross Annual Income (in ₹):", min_value=0, step=1000, format="%i", key="income")
+# Income sources
+st.markdown("### 💼 Income Details")
+salary_income = st.number_input("👨‍💼 Salary Income (₹)", min_value=0, step=1000, format="%i", key="salary_income")
+
+# Toggle for additional income
+show_additional_income = st.toggle("Do you have additional income sources (rental, capital gains)?", value=False)
+rental_income = ltcg = stcg = 0
+if show_additional_income:
+    rental_income = st.number_input("🏠 Rental Income (₹)", min_value=0, step=1000, format="%i", key="rental_income")
+    ltcg = st.number_input("📈 Long-Term Capital Gains (LTCG) (₹)", min_value=0, step=1000, format="%i", key="ltcg")
+    stcg = st.number_input("📉 Short-Term Capital Gains (STCG) (₹)", min_value=0, step=1000, format="%i", key="stcg")
+
+income = salary_income + rental_income
 
 st.markdown("### 💼 Deductions Under Old Regime")
 ded_80c = st.number_input("📟 Section 80C (LIC, PPF, EPF etc.) [Max: ₹1,50,000]", min_value=0, max_value=150000, step=1000, format="%i", key="ded_80c")
@@ -42,7 +57,8 @@ ded_80d = st.number_input(f"🏥 Section 80D (Health Insurance Premium) [Max: �
 if ded_80d >= max_80d:
     st.caption(f"✅ Maximum deduction allowed under Section 80D is ₹{max_80d:,}.")
 
-ded_hra = st.number_input("🏠 HRA Exemption [User-specific limit]", min_value=0, step=1000, format="%i", key="ded_hra")
+ded_hra = st.number_input("🏠 HRA Exemption (If known, override here) (₹)", min_value=0, step=1000, format="%i", key="ded_hra")
+st.caption("ℹ️ If you know the HRA deduction amount (as per Form 16 or employer), enter it here directly.")
 
 max_home_loan = 200000
 ded_home_loan = st.number_input("🏡 Home Loan Interest (Section 24b) [Max: ₹2,00,000]", min_value=0, max_value=max_home_loan, step=1000, format="%i", key="ded_home_loan")
@@ -53,17 +69,20 @@ ded_other = st.number_input("📄 Other Deductions (80E, 80G, etc.)", min_value=
 
 deductions = ded_80c + ded_80d + ded_hra + ded_home_loan + ded_other + ded_80ttb
 
-# Logging and breakdown for transparency
-def breakdown_log(breakdown):
-    for label, value in breakdown:
-        st.write(f"- {label}: ₹{value:,}")
+# Capital Gains Tax Calculation
+def calculate_capital_gains_tax(ltcg, stcg):
+    ltcg_exemption = 100000
+    ltcg_tax = 0
+    if ltcg > ltcg_exemption:
+        ltcg_tax = (ltcg - ltcg_exemption) * 0.10
+    stcg_tax = stcg * 0.15
+    return round(ltcg_tax + stcg_tax)
 
-# Tax calculation functions (enhanced)
+# Tax calculation functions
 def calculate_old_tax(income, deductions, senior):
     breakdown = []
     taxable = max(0, income - deductions)
     breakdown.append(("Taxable Income after deductions", taxable))
-
     tax = 0
     slab1 = 300000 if senior else 250000
     if taxable <= slab1:
@@ -77,11 +96,9 @@ def calculate_old_tax(income, deductions, senior):
     else:
         tax = 112500 + (taxable - 1000000) * 0.3
         breakdown.append(("30% on income above 10L", (taxable - 1000000) * 0.3))
-
     if taxable <= 500000:
         breakdown.append(("Section 87A Rebate", -12500))
         tax = max(0, tax - 12500)
-
     tax_with_cess = round(tax * 1.04)
     breakdown.append(("+ 4% Cess", round(tax * 0.04)))
     breakdown.append(("Total Tax (Old Regime)", tax_with_cess))
@@ -93,7 +110,6 @@ def calculate_new_tax(income, year):
     taxable = max(0, income - std_deduction)
     breakdown.append(("Standard Deduction", std_deduction))
     breakdown.append(("Taxable Income", taxable))
-
     tax = 0
     slabs = [
         (250000, 0.00),
@@ -111,7 +127,6 @@ def calculate_new_tax(income, year):
         (300000, 0.25),
         (float('inf'), 0.30),
     ]
-
     remaining = taxable
     for slab, rate in slabs:
         if remaining <= 0:
@@ -122,19 +137,20 @@ def calculate_new_tax(income, year):
             breakdown.append((f"{int(rate * 100)}% on ₹{int(slab_amount):,}", round(portion)))
         tax += portion
         remaining -= slab_amount
-
     rebate_limit = 500000 if year == "2024–25" else 700000
     if income <= rebate_limit:
         breakdown.append(("Section 87A Rebate", -int(tax)))
         tax = 0
-
     tax_with_cess = round(tax * 1.04)
     breakdown.append(("+ 4% Cess", round(tax * 0.04)))
     breakdown.append(("Total Tax (New Regime)", tax_with_cess))
     return tax_with_cess, breakdown
 
-# PDF Generator
+def breakdown_log(breakdown):
+    for label, value in breakdown:
+        st.write(f"- {label}: ₹{value:,}")
 
+# PDF generator
 def generate_pdf_report(income, old_tax, new_tax, savings):
     pdf = FPDF()
     pdf.add_page()
@@ -146,7 +162,7 @@ def generate_pdf_report(income, old_tax, new_tax, savings):
     pdf.cell(200, 10, txt=f"Gross Income: Rs.{income:,}", ln=True)
     pdf.cell(200, 10, txt=f"Old Regime Tax: Rs.{old_tax:,}", ln=True)
     pdf.cell(200, 10, txt=f"New Regime Tax: Rs.{new_tax:,}", ln=True)
-    pdf.cell(200, 10, txt=f"You save Rs.{abs(savings):,} using {'New' if savings > 0 else 'Old'} Regime.", ln=True)
+    pdf.cell(200, 10, txt=f"You save Rs.{savings:,} using {'New' if savings > 0 else 'Old'} Regime.", ln=True)
     pdf.ln(10)
     pdf.set_font("Arial", size=10)
     disclaimer = ("Disclaimer: This report is a rough estimate based on provided data. "
@@ -160,11 +176,14 @@ def generate_pdf_report(income, old_tax, new_tax, savings):
 if income > 0:
     old_tax, old_breakdown = calculate_old_tax(income, deductions, is_senior)
     new_tax, new_breakdown = calculate_new_tax(income, assessment_year)
+    cap_gains_tax = calculate_capital_gains_tax(ltcg, stcg)
     savings = old_tax - new_tax
 
     st.markdown("### 💰 Tax Comparison")
     st.success(f"Old Regime Tax: ₹{old_tax:,}")
     st.success(f"New Regime Tax: ₹{new_tax:,}")
+    st.info(f"📊 Capital Gains Tax (LTCG+STCG): ₹{cap_gains_tax:,}")
+
     if savings > 0:
         st.info(f"🎯 You save ₹{savings:,} by opting for the **New Regime**")
     elif savings < 0:
@@ -177,7 +196,6 @@ if income > 0:
     st.markdown("#### 📊 Breakdown - New Regime")
     breakdown_log(new_breakdown)
 
-    # PDF download
     pdf_path = generate_pdf_report(income, old_tax, new_tax, savings)
     with open(pdf_path, "rb") as f:
         st.download_button("📄 Download Tax Report (PDF)", f, file_name="Tax_Comparison_Report.pdf", mime="application/pdf")
